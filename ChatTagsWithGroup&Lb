@@ -1,0 +1,124 @@
+local Players = game:GetService("Players")
+local TextChatService = game:GetService("TextChatService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local InfamyModule = require(ReplicatedStorage:WaitForChild("InfamyModule"))
+
+local GroupID = 619038137
+
+local RankTags = {
+	[1] = { Emoji = "Fan", Color = Color3.fromRGB(255, 255, 150) },
+	[2] = { Emoji = "Tester", Color = Color3.fromRGB(60, 255, 66) },
+	[50] = { Emoji = "Colaborator", Color = Color3.fromRGB(255, 247, 0) },
+	[149] = { Emoji = "Director", Color = Color3.fromRGB(254, 127, 0) },
+	[255] = { Emoji = "Developer", Color = Color3.fromRGB(255, 0, 4) }
+}
+
+local function getGroupTag(player)
+	local success, rank = pcall(function()
+		return player:GetRankInGroup(GroupID)
+	end)
+
+	if success then
+		local tagData = RankTags[rank]
+		if tagData then
+			return {
+				Text = "[" .. tagData.Emoji .. "]",
+				Color = tagData.Color
+			}
+		end
+	end
+
+	local hidden = player:FindFirstChild("HiddenStats")
+	local robuxSpent = hidden and hidden:FindFirstChild("RobuxSpent")
+	if robuxSpent and robuxSpent.Value >= 1000 then
+		return {
+			Text = "[🤑]",
+			Color = Color3.fromRGB(0, 255, 100)
+		}
+	end
+
+	return nil
+end
+
+local function getLeaderboardTag(player)
+	local folder = player:FindFirstChild("LeaderboardRanks")
+	local value = folder and folder:FindFirstChild("InfamyLb")
+	if not value or value.Value <= 0 then return nil end
+
+	local rank = value.Value
+	local emoji = "🏆"
+	local color
+
+	if rank == 1 then
+		color = Color3.fromRGB(255, 215, 0) -- ouro
+	elseif rank == 2 then
+		color = Color3.fromRGB(192, 192, 192) -- prata
+	elseif rank == 3 then
+		color = Color3.fromRGB(205, 127, 50) -- bronze
+	elseif rank <= 100 then
+		local t = math.clamp((100 - rank) / 96, 0, 1)
+		local r = 150 + (200 - 150) * t
+		local g = 100 + (50 - 100) * t
+		local b = 255
+		color = Color3.fromRGB(r, g, b)
+	end
+
+	if color then
+		return {
+			Text = string.format("[🏆#%d]", rank),
+			Color = color
+		}
+	end
+
+	return nil
+end
+
+TextChatService.OnIncomingMessage = function(message)
+	local props = Instance.new("TextChatMessageProperties")
+
+	local source = message.TextSource
+	if not source then return end
+
+	local player = Players:GetPlayerByUserId(source.UserId)
+	if not player then return end
+
+	local infamy = player:FindFirstChild("InfamyData") and player.InfamyData.Value or 1
+	local level = player:FindFirstChild("LevelData") and player.LevelData.Value or 0
+
+	local roman = InfamyModule.ToRoman(infamy)
+	local color = InfamyModule.GetColor(infamy)
+
+	local hex = string.format("#%02X%02X%02X", color.R * 255, color.G * 255, color.B * 255)
+
+	local r = math.clamp(color.R + (1 - color.R) * 0.3, 0, 1)
+	local g = math.clamp(color.G + (1 - color.G) * 0.3, 0, 1)
+	local b = math.clamp(color.B + (1 - color.B) * 0.3, 0, 1)
+	local nameHex = string.format("#%02X%02X%02X", r * 255, g * 255, b * 255)
+
+	local infamyText = (infamy >= 25) and string.format("%s (%d)", roman, infamy) or roman
+
+	-- montar prefixo de tags
+	local tagPrefix = ""
+
+	local groupTag = getGroupTag(player)
+	if groupTag then
+		local tagHex = string.format("#%02X%02X%02X", groupTag.Color.R * 255, groupTag.Color.G * 255, groupTag.Color.B * 255)
+		tagPrefix ..= string.format('<font color="%s">%s</font> ', tagHex, groupTag.Text)
+	end
+
+	local lbTag = getLeaderboardTag(player)
+	if lbTag then
+		local tagHex = string.format("#%02X%02X%02X", lbTag.Color.R * 255, lbTag.Color.G * 255, lbTag.Color.B * 255)
+		tagPrefix ..= string.format('<font color="%s">%s</font> ', tagHex, lbTag.Text)
+	end
+
+	props.PrefixText = string.format(
+		'%s<font color="%s">[%s - %d]</font> <font color="%s">%s:</font>',
+		tagPrefix, hex, infamyText, level, nameHex, player.DisplayName or player.Name
+	)
+
+	props.Text = string.format('<font color="%s">%s</font>', hex, message.Text)
+
+	return props
+end
