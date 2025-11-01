@@ -1,67 +1,89 @@
+-- grabbing services we need
 local DataStoreService = game:GetService("DataStoreService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local ds = DataStoreService:GetOrderedDataStore("InfamyLeaderboard")
+-- loading the infamy module
 local InfamyModule = require(ReplicatedStorage:WaitForChild("InfamyModule"))
+local ds = DataStoreService:GetOrderedDataStore("InfamyLeaderboard")
 
+-- leaderboard refresh timer
 local resetTime = 60
 local storedValueName = "InfamyData"
 
+-- getting dummy models for top 3 players
 local lbModel = script.Parent.Parent.Parent.Parent.Parent
 local dummy1 = lbModel:WaitForChild("Dummy1")
 local dummy2 = lbModel:WaitForChild("Dummy2")
 local dummy3 = lbModel:WaitForChild("Dummy3")
 
+-- grabbing humanoids from those dummies
 local dum1Hum = dummy1:WaitForChild("Humanoid")
 local dum2Hum = dummy2:WaitForChild("Humanoid")
 local dum3Hum = dummy3:WaitForChild("Humanoid")
 
+-- cache for character appearances so we don’t spam requests
 local characterAppearances = {}
+
+-- gets the avatar look of a player using their userId
 local function getCharacterAppearance(userId)
 	if characterAppearances[userId] then return characterAppearances[userId] end
+
 	local desc
 	local success = pcall(function()
 		desc = Players:GetHumanoidDescriptionFromUserId(userId)
 	end)
-	if not success then
-		repeat
-			success = pcall(function()
-				desc = Players:GetHumanoidDescriptionFromUserId(userId)
-			end)
-			wait(3)
-		until success
+
+	-- retry if it fails, roblox api sometimes buggy
+	while not success do
+		wait(3)
+		success = pcall(function()
+			desc = Players:GetHumanoidDescriptionFromUserId(userId)
+		end)
 	end
+
 	characterAppearances[userId] = desc
 	return desc
 end
 
+-- cache for usernames to userIds
 local cache = {}
+
+-- gets userId from username, tries local first then roblox api
 local function getUserIdFromUsername(name)
 	if cache[name] then return cache[name] end
+
 	local player = Players:FindFirstChild(name)
 	if player then
 		cache[name] = player.UserId
 		return player.UserId
 	end
+
 	local id
 	local success = pcall(function()
 		id = Players:GetUserIdFromNameAsync(name)
 	end)
-	cache[name] = id
+
+	if success then
+		cache[name] = id
+	end
+
 	return id
 end
 
+-- formats infamy value into roman + number
 local function formatInfamy(infamy)
 	local roman = InfamyModule.ToRoman(infamy)
 	return string.format("%s (%d)", roman, infamy)
 end
 
+-- updates the leaderboard UI and dummy appearances
 local function updateLeaderboard()
 	local success, err = pcall(function()
 		local data = ds:GetSortedAsync(false, 100)
 		local page = data:GetCurrentPage()
 
+		-- clear old frames
 		for _, frame in pairs(script.Parent:GetChildren()) do
 			if frame:IsA("Frame") then
 				frame:Destroy()
@@ -83,6 +105,7 @@ local function updateLeaderboard()
 			local userId = getUserIdFromUsername(name)
 			local desc = getCharacterAppearance(userId)
 
+			-- top 3 get dummy representation
 			if rank == 1 then
 				newObj.Rank.TextColor3 = Color3.fromRGB(255, 255, 0)
 				dum1Hum:ApplyDescription(desc)
@@ -97,7 +120,7 @@ local function updateLeaderboard()
 				dum3Hum.DisplayName = name
 			end
 
-			-- Atualiza pasta LeaderboardRanks
+			-- update leaderboard rank folder inside player
 			local player = Players:FindFirstChild(name)
 			if player then
 				local folder = player:FindFirstChild("LeaderboardRanks")
@@ -118,11 +141,13 @@ local function updateLeaderboard()
 			end
 		end
 	end)
+
 	if not success then
 		warn("Leaderboard update failed:", err)
 	end
 end
 
+-- plays emotes on the dummy avatars
 local function playEmoteForDummies()
 	for i = 1, 3 do
 		local dummy = lbModel:FindFirstChild("Dummy" .. i)
@@ -130,15 +155,12 @@ local function playEmoteForDummies()
 			for _, part in pairs(dummy:GetChildren()) do
 				if part:IsA("BasePart") then
 					part.CanCollide = false
-					if part.Name == "HumanoidRootPart" then
-						part.Anchored = true
-					else
-						part.Anchored = false
-					end
+					part.Anchored = part.Name == "HumanoidRootPart"
 				end
 			end
 
 			dummy.Humanoid.PlatformStand = false
+
 			local anim = Instance.new("Animation")
 			if i == 1 then
 				anim.AnimationId = "rbxassetid://3337994105"
@@ -147,44 +169,72 @@ local function playEmoteForDummies()
 			elseif i == 3 then
 				anim.AnimationId = "rbxassetid://3333499508"
 			end
+
 			local track = dummy.Humanoid:LoadAnimation(anim)
 			track:Play()
 		end
 	end
 end
 
+-- run emotes once at start
 playEmoteForDummies()
 
+-- delay leaderboard update a bit so stuff loads
 task.delay(2, updateLeaderboard)
 
+-- loop that updates leaderboard every minute
 while wait(1) do
 	resetTime -= 1
 	if resetTime <= 0 then
 		resetTime = 60
+
 		for _, player in pairs(Players:GetPlayers()) do
-			local infamy = player:FindFirstChild("InfamyData")
+			local infamy = player:FindFirstChild(storedValueName)
 			local value = infamy and infamy.Value or 0
 			ds:SetAsync(player.Name, value)
 		end
+
 		updateLeaderboard()
 	end
 end
 
+-- when player leaves, save their infamy
 Players.PlayerRemoving:Connect(function(player)
-	local infamy = player:FindFirstChild("InfamyData")
+	local infamy = player:FindFirstChild(storedValueName)
+	local value = infamy and infamy.Value or 0
+
+	local success = pcall(function()
+		ds:SetAsync(player.Name, value)
+	end)
+
+	-- retry if it fails, just to be safe
+	local attempts = 0
+	while not success do
+		wait(3)
+		success = pcall(function()
+			ds:SetAsync(player.Name, value)
+		end)
+		attempts += 1
+	end
+
+	if attempts > 0 then
+		print("saved after", attempts, "tries")
+	end
+end)
+
+-- extra chill: helper to manually refresh leaderboard if needed
+ReplicatedStorage:WaitForChild("RefreshInfamyLeaderboard").OnServerEvent:Connect(function()
+	updateLeaderboard()
+end)
+
+-- helper to manually save a player’s infamy
+ReplicatedStorage:WaitForChild("SaveInfamyData").OnServerEvent:Connect(function(_, player)
+	local infamy = player:FindFirstChild(storedValueName)
 	local value = infamy and infamy.Value or 0
 	local success = pcall(function()
 		ds:SetAsync(player.Name, value)
 	end)
 	if not success then
-		local attempts = 0
-		repeat
-			success = pcall(function()
-				ds:SetAsync(player.Name, value)
-			end)
-			attempts += 1
-			wait(3)
-		until success
-		print("Saved after", attempts, "attempts.")
+		warn("manual save failed for", player.Name)
 	end
 end)
