@@ -1,0 +1,225 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TrailsFolder = ReplicatedStorage:WaitForChild("Trails")
+local RarityColors = ReplicatedStorage:WaitForChild("TrailsConfig"):WaitForChild("RaritiesColors")
+local Remotes = ReplicatedStorage:WaitForChild("Remotes")
+
+local TrailManager = {}
+
+function TrailManager.GetAllTrails()
+	local trails = {}
+	for _, trailFolder in ipairs(TrailsFolder:GetChildren()) do
+		if trailFolder:IsA("Folder") then
+			table.insert(trails, trailFolder)
+		end
+	end
+	return trails
+end
+
+local function GetTrailChance(trail)
+	local chanceValue = trail:FindFirstChild("Chance")
+	if chanceValue and chanceValue:IsA("NumberValue") then
+		return chanceValue.Value
+	end
+
+	local converted = trail:FindFirstChild("ChanceConverted")
+	if converted and converted:IsA("NumberValue") then
+		local raw = tostring(converted.Value)
+		local decimal = "0." .. string.rep("0", #raw - 1) .. "1"
+		return tonumber(decimal)
+	end
+
+	return nil
+end
+
+function TrailManager.RollTrail(player)
+	local candidates = TrailManager.GetAllTrails()
+	local weightedList = {}
+	local totalWeight = 0
+
+	for _, trail in pairs(candidates) do
+		local chance = GetTrailChance(trail) or 0
+		totalWeight += chance
+		table.insert(weightedList, {
+			Trail = trail,
+			Weight = chance
+		})
+	end
+
+	local roll = math.random() * totalWeight
+	local cumulative = 0
+
+	for _, entry in ipairs(weightedList) do
+		cumulative += entry.Weight
+		if roll <= cumulative then
+			return entry.Trail.Name
+		end
+	end
+
+	-- fallback aleatório
+	return candidates[math.random(1, #candidates)].Name
+end
+
+function TrailManager.GetTrailStats(trailName)
+	local trail = TrailsFolder:FindFirstChild(trailName)
+	if not trail then return nil end
+
+	return {
+		XPMulti = trail:FindFirstChild("XPMulti") and trail.XPMulti.Value or 1,
+		Walkspeed = trail:FindFirstChild("Walkspeed") and trail.Walkspeed.Value or 0,
+		Rarity = trail:FindFirstChild("Rarity") and trail.Rarity.Value or "Common",
+		IsRare = trail:FindFirstChild("IsRare") and trail.IsRare.Value or false,
+		Color = RarityColors:FindFirstChild(trail:FindFirstChild("Rarity").Value)
+			and RarityColors[trail.Rarity.Value].Value or Color3.new(1, 1, 1)
+	}
+end
+
+function TrailManager.ApplyTrail(player, trailName)
+	if not trailName or trailName == "" or trailName == "None" then
+		warn("Trail inválida para " .. player.Name .. ": " .. tostring(trailName))
+		return
+	end
+
+	local stats = TrailManager.GetTrailStats(trailName)
+	if not stats then
+		warn("TrailStats não encontrados para " .. trailName .. " (" .. player.Name .. ")")
+		return
+	end
+
+	local trailData = player:FindFirstChild("TrailData")
+	if not trailData then
+		trailData = Instance.new("Folder")
+		trailData.Name = "TrailData"
+		trailData.Parent = player
+	end
+
+	local currentTrail = trailData:FindFirstChild("CurrentTrail")
+	if not currentTrail then
+		currentTrail = Instance.new("StringValue")
+		currentTrail.Name = "CurrentTrail"
+		currentTrail.Parent = trailData
+	end
+
+	if currentTrail.Value ~= trailName then
+		currentTrail.Value = trailName
+	end
+
+	local boostFolder = player:FindFirstChild("Boosts")
+	if boostFolder then
+		local trailXP = boostFolder:FindFirstChild("TrailXP")
+		if not trailXP then
+			trailXP = Instance.new("NumberValue")
+			trailXP.Name = "TrailXP"
+			trailXP.Parent = boostFolder
+		end
+		trailXP.Value = stats.XPMulti
+	end
+
+	local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		local baseSpeed = 18
+		local gamepassBoost = player:FindFirstChild("GamepassBoosts") and player.GamepassBoosts:FindFirstChild("WalkspeedBoost")
+		local totalBoost = (gamepassBoost and gamepassBoost.Value or 0) + stats.Walkspeed
+		humanoid.WalkSpeed = baseSpeed + totalBoost
+		print(string.format("%s recebeu velocidade: %d", player.Name, humanoid.WalkSpeed))
+	end
+
+	TrailManager.ApplyTrailVisualServer(player, trailName)
+
+	local spins = player:FindFirstChild("HiddenStats") and player.HiddenStats:FindFirstChild("TrailSpins")
+	if spins then
+		spins.Value += 1
+	end
+end
+
+function TrailManager.AnnounceTrail(player, trailName)
+	local stats = TrailManager.GetTrailStats(trailName)
+	if stats and stats.IsRare then
+		local trail = TrailsFolder:FindFirstChild(trailName)
+		local chance = trail and GetTrailChance(trail) or 0
+		local formattedChance = string.format("%.6f", chance):gsub("0+$", ""):gsub("%.$", "")
+		local message = string.format("🌟 %s obtained the trail: %s (%s%% chance)", player.DisplayName or player.Name, trailName, formattedChance)
+		Remotes:WaitForChild("AnnounceRareTrail"):FireAllClients({
+			Message = message,
+			Color = stats.Color
+		})
+	end
+end
+
+function TrailManager.ApplyTrailVisualServer(player, trailName)
+	local character = player.Character
+	if not character then return end
+
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+
+	for _, obj in ipairs(root:GetChildren()) do
+		if obj:IsA("Trail") or obj:IsA("ParticleEmitter") or obj:IsA("Attachment") then
+			obj:Destroy()
+		end
+	end
+
+	local trailFolder = TrailsFolder:FindFirstChild(trailName)
+	if not trailFolder then return end
+
+	local gradient = trailFolder:FindFirstChild("Trail")
+	local colorSequence = gradient and gradient:IsA("UIGradient") and gradient.Color or ColorSequence.new(Color3.new(1, 1, 1))
+
+	local attachTop = Instance.new("Attachment")
+	attachTop.Name = "TrailTop"
+	attachTop.Position = Vector3.new(0, 1.5, 0)
+	attachTop.Parent = root
+
+	local attachBottom = Instance.new("Attachment")
+	attachBottom.Name = "TrailBottom"
+	attachBottom.Position = Vector3.new(0, -1.5, 0)
+	attachBottom.Parent = root
+
+	local trail = Instance.new("Trail")
+	trail.Name = "TrailEffect"
+	trail.Attachment0 = attachTop
+	trail.Attachment1 = attachBottom
+	trail.Lifetime = 1.5
+	trail.MinLength = 0.1
+	trail.MaxLength = 20
+	trail.Transparency = NumberSequence.new(0.2, 1)
+	trail.Color = colorSequence
+	trail.Parent = root
+
+	local source = gradient or trailFolder
+	for _, child in ipairs(source:GetChildren()) do
+		if child:IsA("ParticleEmitter") then
+			local emitter = child:Clone()
+			emitter.Parent = root
+		end
+	end
+end
+
+-- reaplicar trail ao respawn
+Players.PlayerAdded:Connect(function(player)
+	player.CharacterAdded:Connect(function()
+		task.wait(1)
+		local trailData = player:FindFirstChild("TrailData")
+		local currentTrail = trailData and trailData:FindFirstChild("CurrentTrail")
+		if currentTrail and currentTrail.Value ~= "" then
+			TrailManager.ApplyTrail(player, currentTrail.Value)
+			print(string.format("Reaplicando trail %s para %s", currentTrail.Value, player.Name))
+		end
+	end)
+end)
+
+-- aplicar trail visual para jogadores já presentes
+for _, player in ipairs(Players:GetPlayers()) do
+	player.CharacterAdded:Connect(function()
+		task.wait(1)
+		local trailData = player:FindFirstChild("TrailData")
+		local currentTrail = trailData and trailData:FindFirstChild("CurrentTrail")
+		if currentTrail and currentTrail.Value ~= "" then
+			TrailManager.ApplyTrail(player, currentTrail.Value)
+			print(string.format("Reaplicando trail %s para %s", currentTrail.Value, player.Name))
+		end
+	end)
+end
+
+
+return TrailManager
