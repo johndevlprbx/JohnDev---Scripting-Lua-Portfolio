@@ -1,0 +1,108 @@
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Players = game:GetService("Players")
+local DataStoreService = game:GetService("DataStoreService")
+
+local CodeEvent = Instance.new("RemoteEvent")
+CodeEvent.Name = "SubmitCode"
+CodeEvent.Parent = ReplicatedStorage:WaitForChild("Remotes")
+
+local UsedCodesStore = DataStoreService:GetDataStore("UsedCodes")
+local globalUses = {} 
+
+-- tabela de códigos
+local Codes = {
+	["Release"] = {
+		Reward = {Tokens = 10},
+		UseLimit = nil
+	},
+	["J0hnD3v"] = {
+		Reward = {Tokens = 50},
+		UseLimit = nil
+	},
+	["LimitedDrop"] = {
+		Reward = {Level = 5},
+		UseLimit = 100
+	},
+	["expired"] = "Expired",
+	["OldGift"] = "Expired"
+}
+
+-- verifica
+local function hasUsedCode(player, code)
+	local key = "Code_" .. player.UserId .. "_" .. code
+	local success, result = pcall(function()
+		return UsedCodesStore:GetAsync(key)
+	end)
+	return success and result == true
+end
+
+-- usado
+local function markCodeUsed(player, code)
+	local key = "Code_" .. player.UserId .. "_" .. code
+	pcall(function()
+		UsedCodesStore:SetAsync(key, true)
+	end)
+end
+
+CodeEvent.OnServerEvent:Connect(function(player, code)
+	code = code
+	local userId = player.UserId
+
+	local result = ""
+	local sound = ""
+	local notify = ""
+
+	if Codes[code] == "Expired" then
+		result = "Expired Code"
+		sound = "CodeError"
+
+	elseif not Codes[code] then
+		result = "Invalid Code"
+		sound = "CodeError"
+
+	elseif hasUsedCode(player, code) then
+		result = "Already Used"
+		sound = "CodeError"
+
+	elseif Codes[code].UseLimit and (globalUses[code] or 0) >= Codes[code].UseLimit then
+		result = "Expired Code"
+		sound = "CodeError"
+
+	else
+		local reward = Codes[code].Reward
+		local hidden = player:FindFirstChild("HiddenStats")
+		local level = player:FindFirstChild("LevelData")
+		local infamy = player:FindFirstChild("InfamyData")
+
+		if reward.Tokens and hidden and hidden:FindFirstChild("Tokens") then
+			hidden.Tokens.Value += reward.Tokens
+			notify = "+ " .. reward.Tokens .. " Tokens"
+		end
+		if reward.Level and level then
+			level.Value = math.clamp(level.Value + reward.Level, 1, 100)
+			notify = "+ " .. reward.Level .. " Levels"
+		end
+		if reward.Infamy and infamy then
+			infamy.Value = math.clamp(infamy.Value + reward.Infamy, 0, 250)
+			notify = "+ " .. reward.Infamy .. " Infamy"
+		end
+
+		result = "Code Redeemed Successfully"
+		sound = "CodeSucess"
+		markCodeUsed(player, code)
+		globalUses[code] = (globalUses[code] or 0) + 1
+	end
+
+	ReplicatedStorage.Remotes:WaitForChild("CodeFeedback"):FireClient(player, {
+		Result = result,
+		Sound = sound,
+		Notify = notify
+	})
+
+	if notify and notify ~= "" then
+		ReplicatedStorage.Remotes:WaitForChild("NotifyCodeReward"):FireClient(player, {
+			Message = notify,
+			Color = Color3.fromRGB(100, 255, 100)
+		})
+	end
+end)
